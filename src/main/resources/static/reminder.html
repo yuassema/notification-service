@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Reminder Service</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+    <h1>📅 Schedule a Reminder</h1>
+    <form id="reminderForm">
+        <label for="message">Message:</label>
+        <input type="text" id="message" name="message" placeholder="Enter your task" required>
+
+        <label for="remindAt">Remind At:</label>
+        <input type="datetime-local" id="remindAt" name="remindAt" required>
+
+        <button type="submit">Create Reminder</button>
+    </form>
+    <p id="responseMessage"></p>
+    <div id="timersList"></div>
+</div>
+
+<script>
+    const form = document.getElementById('reminderForm');
+    const responseMessage = document.getElementById('responseMessage');
+    const timersList = document.getElementById('timersList');
+    let reminders = JSON.parse(localStorage.getItem('reminders')) || [];
+
+    // Локальный счетчик ID для напоминаний
+    let localIdCounter = reminders.length > 0 ? Math.max(...reminders.map(r => r.localId || 0)) + 1 : 1;
+
+    // Проверка taskId из URL для интеграции с To-Do List (опционально)
+    const urlParams = new URLSearchParams(window.location.search);
+    const taskId = urlParams.get('taskId');
+    if (taskId) {
+        fetch(`http://localhost:9091/reminders/task/${taskId}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+                return response.json();
+            })
+            .then(task => {
+                console.log('Received task:', task);
+                const title = task.title || 'Unnamed Task';
+                document.getElementById('message').value = `Reminder for task: ${title}`;
+            })
+            .catch(error => {
+                console.error('Error fetching task:', error);
+                document.getElementById('message').value = `Reminder for task: [Details unavailable]`;
+            });
+    }
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const remindAt = document.getElementById('remindAt').value;
+        const message = document.getElementById('message').value;
+        const data = {
+            message: message,
+            remindAt: remindAt
+        };
+
+        try {
+            const response = await fetch('http://localhost:9091/reminders', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            if (response.ok) {
+                const savedReminder = await response.json(); // Получаем объект Reminder с id
+                responseMessage.textContent = '✅ Reminder scheduled successfully!';
+                addReminder(message, new Date(remindAt), savedReminder.id);
+                form.reset();
+            } else {
+                responseMessage.textContent = `❌ Failed to schedule reminder: ${await response.text()}`;
+            }
+        } catch (error) {
+            console.error('Network error:', error);
+            responseMessage.textContent = `❌ Network error: ${error.message}`;
+        }
+    });
+
+    function addReminder(message, remindAt, backendId) {
+        const reminder = {
+            localId: localIdCounter++,
+            backendId: backendId,
+            message: message,
+            remindAt: remindAt.getTime(),
+            intervalId: null
+        };
+        reminders.push(reminder);
+        localStorage.setItem('reminders', JSON.stringify(reminders));
+        startTimer(reminder);
+        renderReminders();
+    }
+
+    function startTimer(reminder) {
+        if (reminder.intervalId) clearInterval(reminder.intervalId);
+
+        reminder.intervalId = setInterval(() => {
+            const now = new Date().getTime();
+            const timeLeft = reminder.remindAt - now;
+
+            if (timeLeft <= 0) {
+                clearInterval(reminder.intervalId);
+                reminders = reminders.filter(r => r.localId !== reminder.localId);
+                localStorage.setItem('reminders', JSON.stringify(reminders));
+                renderReminders();
+                responseMessage.textContent = `⏰ Reminder triggered: ${reminder.message}`;
+                return;
+            }
+
+            renderReminders();
+        }, 1000);
+    }
+
+    function renderReminders() {
+        timersList.innerHTML = '';
+        reminders.forEach(reminder => {
+            const now = new Date().getTime();
+            const timeLeft = reminder.remindAt - now;
+
+            if (timeLeft > 0) {
+                const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
+
+                const timerDiv = document.createElement('div');
+                timerDiv.className = 'timer-item';
+                timerDiv.innerHTML = `
+                    <h2>${reminder.message}</h2>
+                    <p>Time Remaining: ${days}d ${hours}h ${minutes}m ${seconds}s</p>
+                    <button class="delete-btn" onclick="deleteReminder(${reminder.localId})">Delete</button>
+                `;
+                timersList.appendChild(timerDiv);
+            }
+        });
+    }
+
+    window.deleteReminder = async function(localId) {
+        const reminder = reminders.find(r => r.localId === localId);
+        if (reminder) {
+            if (reminder.intervalId) clearInterval(reminder.intervalId);
+            reminders = reminders.filter(r => r.localId !== localId);
+            localStorage.setItem('reminders', JSON.stringify(reminders));
+            renderReminders();
+            responseMessage.textContent = '🗑️ Reminder deleted!';
+
+            if (reminder.backendId) {
+                try {
+                    const response = await fetch(`http://localhost:9091/reminders/${reminder.backendId}`, {
+                        method: 'DELETE'
+                    });
+                    if (!response.ok) {
+                        console.error('Failed to delete from backend:', await response.text());
+                    }
+                } catch (error) {
+                    console.error('Error deleting from backend:', error);
+                }
+            }
+        }
+    };
+
+    // Запускаем таймеры для существующих напоминаний
+    reminders.forEach(reminder => {
+        reminder.remindAt = parseInt(reminder.remindAt);
+        startTimer(reminder);
+    });
+    renderReminders();
+</script>
+</body>
+</html>
